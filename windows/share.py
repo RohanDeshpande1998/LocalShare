@@ -1,13 +1,22 @@
-import sys, os, socket, threading, shutil
+import sys, os, socket, threading, shutil, tempfile
 import http.server, urllib.parse, zipfile, mimetypes, io
 from pathlib import Path
 import tkinter as tk
 from PIL import Image as PILImage, ImageTk
 import qrcode
 
+# ─────────────────────────────────────────────────────────────
+# CONFIG
+# ─────────────────────────────────────────────────────────────
+
 ROOT = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path.home().resolve()
 
-# ── Network ───────────────────────────────────────────────────────────────────
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
+
+# ─────────────────────────────────────────────────────────────
+# NETWORK
+# ─────────────────────────────────────────────────────────────
+
 def local_ip():
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -15,7 +24,7 @@ def local_ip():
         ip = s.getsockname()[0]
         s.close()
         return ip
-    except Exception:
+    except:
         return "127.0.0.1"
 
 def find_free_port(start=8765, end=8899):
@@ -25,82 +34,88 @@ def find_free_port(start=8765, end=8899):
             s.bind(("", port))
             s.close()
             return port
-        except OSError:
+        except:
             continue
-    raise RuntimeError("No free ports available")
+    raise RuntimeError("No free ports")
 
 PORT = find_free_port()
 IP   = local_ip()
 URL  = f"http://{IP}:{PORT}"
 
-IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic"}
+# ─────────────────────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────────────────────
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
 def safe_path(rel):
-    """Resolve rel against ROOT and reject any path that escapes ROOT."""
-    path = (ROOT / rel).resolve() if rel else ROOT
-    if path != ROOT and ROOT not in path.parents:
-        return None
-    return path
-
-def list_dir(folder):
-    """List a directory, silently skipping unreadable entries."""
-    folders, images, others = [], [], []
     try:
-        for entry in folder.iterdir():
-            try:
-                if entry.is_dir():
-                    folders.append(entry)
-                elif entry.is_file():
-                    if entry.suffix.lower() in IMAGE_EXT:
-                        images.append(entry)
-                    else:
-                        others.append(entry)
-            except OSError:
-                pass   # skip unreadable entries
-    except OSError:
-        pass
+        rel = rel.strip("/")  # normalize incoming URL path
+
+        path = (ROOT / rel).resolve()
+
+        # robust containment check (cross-platform safe)
+        if os.path.commonpath([str(ROOT), str(path)]) != str(ROOT):
+            return None
+
+        return path
+
+    except Exception:
+        return None
+    
+def list_dir(folder):
+    folders, images, others = [], [], []
+    for entry in folder.iterdir():
+        try:
+            if entry.is_dir():
+                folders.append(entry)
+            elif entry.is_file():
+                if entry.suffix.lower() in IMAGE_EXT:
+                    images.append(entry)
+                else:
+                    others.append(entry)
+        except:
+            pass
     return sorted(folders), sorted(images), sorted(others)
 
-def content_disposition(filename):
-    """
-    RFC 5987-compliant Content-Disposition header value.
-    Handles filenames with quotes, spaces, unicode, etc.
-    """
-    ascii_name = filename.encode("ascii", "replace").decode("ascii")
-    utf8_name  = urllib.parse.quote(filename, safe="")
-    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{utf8_name}"
+def content_disposition(name):
+    quoted = urllib.parse.quote(name)
+    return f"attachment; filename*=UTF-8''{quoted}"
 
-def human_size(n_bytes):
-    if n_bytes >= 1_048_576:
-        return f"{n_bytes / 1_048_576:.1f} MB"
-    return f"{n_bytes // 1024} KB"
+def human_size(n):
+    if n >= 1_048_576:
+        return f"{n/1_048_576:.1f} MB"
+    return f"{n//1024} KB"
 
-# ── Gallery HTTP handler ──────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# HTTP HANDLER
+# ─────────────────────────────────────────────────────────────
+
 class GalleryHandler(http.server.BaseHTTPRequestHandler):
 
-    def log_message(self, *a): pass
+    def log_message(self, *args): pass
 
     def do_GET(self):
-        rel = urllib.parse.unquote(self.path.split("?")[0]).strip("/")
+        parsed = urllib.parse.urlparse(self.path)
+        rel = urllib.parse.unquote(parsed.path)
 
-        # ── Routing ───────────────────────────────────────────────────────────
-        # FIX: use lstrip("/") after removing prefix so trailing slash
-        #      on the root-level URL doesn't cause a routing miss.
+        # remove ONLY leading slash
+        if rel.startswith("/"):
+            rel = rel[1:]
 
-        if rel == "thumb" or rel.startswith("thumb/"):
-            return self.serve_thumbnail(rel[len("thumb"):].lstrip("/"))
+        # ROUTING
+        if rel.startswith("thumb/"):
+            return self.serve_thumbnail(rel[len("thumb/"):])
 
-        # "Download All" — zips only the files visible on the current page (non-recursive)
-        if rel == "download-all" or rel.startswith("download-all/"):
-            return self.serve_flat_zip(rel[len("download-all"):].lstrip("/"))
+        if rel.startswith("download-all/"):
+            return self.serve_flat_zip(rel[len("download-all/"):])
+        elif rel == "download-all":
+            return self.serve_flat_zip("")
 
-        # Per-folder ZIP — recursive
-        if rel == "download-folder" or rel.startswith("download-folder/"):
-            return self.serve_folder_zip(rel[len("download-folder"):].lstrip("/"))
+        if rel.startswith("download-folder/"):
+            return self.serve_folder_zip(rel[len("download-folder/"):])
 
         target = safe_path(rel)
-        if target is None:
+
+        if not target:
             self.send_error(403); return
 
         if target.is_dir():
@@ -109,7 +124,86 @@ class GalleryHandler(http.server.BaseHTTPRequestHandler):
             self.serve_file(target)
         else:
             self.send_error(404)
+    # ─────────────────────────────
+    # FILE DOWNLOAD
+    # ─────────────────────────────
 
+    def serve_file(self, path):
+        try:
+            mime, _ = mimetypes.guess_type(str(path))
+            size = path.stat().st_size
+
+            self.send_response(200)
+            self.send_header("Content-Type", mime or "application/octet-stream")
+            self.send_header("Content-Disposition", content_disposition(path.name))
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+
+            with open(path, "rb") as f:
+                shutil.copyfileobj(f, self.wfile)
+        except:
+            self.send_error(500)
+
+    # ─────────────────────────────
+    # ZIP (SAFE IMPLEMENTATION)
+    # ─────────────────────────────
+
+    def build_zip(self, files, arcname_fn):
+        tmp = tempfile.NamedTemporaryFile(delete=False)
+        tmp.close()
+
+        try:
+            with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_STORED) as zf:
+                for f in files:
+                    try:
+                        zf.write(f, arcname_fn(f))
+                    except:
+                        pass
+            return tmp.name
+        except:
+            os.unlink(tmp.name)
+            raise
+
+    def send_zip(self, zip_path, zip_name):
+        size = os.path.getsize(zip_path)
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Disposition", content_disposition(zip_name))
+        self.send_header("Content-Length", str(size))
+        self.end_headers()
+
+        with open(zip_path, "rb") as f:
+            shutil.copyfileobj(f, self.wfile)
+
+        os.remove(zip_path)
+
+    def serve_flat_zip(self, rel):
+        folder = safe_path(rel)
+        if not folder or not folder.is_dir():
+            self.send_error(404); return
+
+        files = [f for f in folder.rglob("*") if f.is_file()]
+
+        if not files:
+            self.send_error(404); return
+
+        zip_path = self.build_zip(
+            files,
+            lambda f: str(f.relative_to(folder))
+        )
+
+        self.send_zip(zip_path, (folder.name or "localshare") + ".zip")
+        
+    def serve_folder_zip(self, rel):
+        folder = safe_path(rel)
+        if not folder or not folder.is_dir():
+            self.send_error(404); return
+
+        files = [f for f in folder.rglob("*") if f.is_file()]
+        zip_path = self.build_zip(files, lambda f: str(f.relative_to(folder.parent)))
+        self.send_zip(zip_path, (folder.name or "localshare") + ".zip")
+        
     # ── Gallery page ──────────────────────────────────────────────────────────
     def serve_gallery(self, cwd, rel_path):
         folders, images, others = list_dir(cwd)
@@ -174,7 +268,7 @@ class GalleryHandler(http.server.BaseHTTPRequestHandler):
         zip_section = ""
         if total >= 1:
             zip_rel = f"download-all/{urllib.parse.quote(rel_path)}" if rel_path else "download-all"
-            label   = f"Download all {total} file{'s' if total != 1 else ''} as ZIP"
+            label   = f"Download all as ZIP"
             zip_section = f'<a class="zip-btn" href="/{zip_rel}">&#11015; {label}</a>'
 
         # Breadcrumb
@@ -274,127 +368,154 @@ class GalleryHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
-    # ── Thumbnail ─────────────────────────────────────────────────────────────
     def serve_thumbnail(self, rel):
         path = safe_path(rel)
         if not path or not path.is_file():
             self.send_error(404); return
+
         try:
             img = PILImage.open(path)
+            img.load()
+
             img.thumbnail((300, 300))
             img = img.convert("RGB")
+
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=82)
+
             data = buf.getvalue()
+
             self.send_response(200)
             self.send_header("Content-Type", "image/jpeg")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
+
             self.wfile.write(data)
-        except Exception:
+
+        except Exception as e:
+            print("Thumbnail error:", path, e)
             self.send_error(500)
+    # # ── Thumbnail ─────────────────────────────────────────────────────────────
+    # def serve_thumbnail(self, rel):
+    #     path = safe_path(rel)
+    #     if not path or not path.is_file():
+    #         self.send_error(404); return
+    #     try:
+    #         img = PILImage.open(path)
+    #         img.thumbnail((300, 300))
+    #         img = img.convert("RGB")
+    #         buf = io.BytesIO()
+    #         img.save(buf, format="JPEG", quality=82)
+    #         data = buf.getvalue()
+    #         self.send_response(200)
+    #         self.send_header("Content-Type", "image/jpeg")
+    #         self.send_header("Content-Length", str(len(data)))
+    #         self.end_headers()
+    #         self.wfile.write(data)
+    #     except Exception:
+    #         self.send_error(500)
 
-    # ── Single file download ───────────────────────────────────────────────────
-    def serve_file(self, filepath):
-        try:
-            mime, _ = mimetypes.guess_type(str(filepath))
-            size = filepath.stat().st_size
-            self.send_response(200)
-            self.send_header("Content-Type", mime or "application/octet-stream")
-            self.send_header("Content-Disposition", content_disposition(filepath.name))
-            self.send_header("Content-Length", str(size))
-            self.end_headers()
-            with open(filepath, "rb") as f:
-                shutil.copyfileobj(f, self.wfile)
-        except OSError:
-            self.send_error(500)
+    # # ── Single file download ───────────────────────────────────────────────────
+    # def serve_file(self, filepath):
+    #     try:
+    #         mime, _ = mimetypes.guess_type(str(filepath))
+    #         size = filepath.stat().st_size
+    #         self.send_response(200)
+    #         self.send_header("Content-Type", mime or "application/octet-stream")
+    #         self.send_header("Content-Disposition", content_disposition(filepath.name))
+    #         self.send_header("Content-Length", str(size))
+    #         self.end_headers()
+    #         with open(filepath, "rb") as f:
+    #             shutil.copyfileobj(f, self.wfile)
+    #     except OSError:
+    #         self.send_error(500)
 
-    # ── "Download All" ZIP — flat, only files visible on current page ──────────
-    def serve_flat_zip(self, rel):
-        folder = safe_path(rel)
-        if not folder or not folder.is_dir():
-            self.send_error(404); return
+    # # ── "Download All" ZIP — flat, only files visible on current page ──────────
+    # def serve_flat_zip(self, rel):
+    #     folder = safe_path(rel)
+    #     if not folder or not folder.is_dir():
+    #         self.send_error(404); return
 
-        _, images, others = list_dir(folder)
-        files = images + others
+    #     _, images, others = list_dir(folder)
+    #     files = images + others
 
-        if not files:
-            self.send_error(404); return
+    #     if not files:
+    #         self.send_error(404); return
 
-        zip_name = (folder.name or "localshare") + ".zip"
-        self.send_response(200)
-        self.send_header("Content-Type", "application/zip")
-        self.send_header("Content-Disposition", content_disposition(zip_name))
-        self.send_header("Transfer-Encoding", "chunked")
-        self.end_headers()
+    #     zip_name = (folder.name or "localshare") + ".zip"
+    #     self.send_response(200)
+    #     self.send_header("Content-Type", "application/zip")
+    #     self.send_header("Content-Disposition", content_disposition(zip_name))
+    #     self.send_header("Transfer-Encoding", "chunked")
+    #     self.end_headers()
 
-        # Stream the ZIP directly to the socket — no RAM buffer
-        self._stream_zip(files, arcname_fn=lambda f: f.name)
+    #     # Stream the ZIP directly to the socket — no RAM buffer
+    #     self._stream_zip(files, arcname_fn=lambda f: f.name)
 
-    # ── Per-folder ZIP — recursive ─────────────────────────────────────────────
-    def serve_folder_zip(self, rel):
-        folder = safe_path(rel)
-        if not folder or not folder.is_dir():
-            self.send_error(404); return
+    # # ── Per-folder ZIP — recursive ─────────────────────────────────────────────
+    # def serve_folder_zip(self, rel):
+    #     folder = safe_path(rel)
+    #     if not folder or not folder.is_dir():
+    #         self.send_error(404); return
 
-        zip_name = (folder.name or "localshare") + ".zip"
-        self.send_response(200)
-        self.send_header("Content-Type", "application/zip")
-        self.send_header("Content-Disposition", content_disposition(zip_name))
-        self.send_header("Transfer-Encoding", "chunked")
-        self.end_headers()
+    #     zip_name = (folder.name or "localshare") + ".zip"
+    #     self.send_response(200)
+    #     self.send_header("Content-Type", "application/zip")
+    #     self.send_header("Content-Disposition", content_disposition(zip_name))
+    #     self.send_header("Transfer-Encoding", "chunked")
+    #     self.end_headers()
 
-        all_files = []
-        try:
-            for f in folder.rglob("*"):
-                try:
-                    if f.is_file():
-                        all_files.append(f)
-                except OSError:
-                    pass
-        except OSError:
-            pass
+    #     all_files = []
+    #     try:
+    #         for f in folder.rglob("*"):
+    #             try:
+    #                 if f.is_file():
+    #                     all_files.append(f)
+    #             except OSError:
+    #                 pass
+    #     except OSError:
+    #         pass
 
-        self._stream_zip(all_files, arcname_fn=lambda f: str(f.relative_to(folder.parent)))
+    #     self._stream_zip(all_files, arcname_fn=lambda f: str(f.relative_to(folder.parent)))
 
-    # ── Streaming ZIP writer ───────────────────────────────────────────────────
-    def _stream_zip(self, files, arcname_fn):
-        """
-        Write a ZIP file in chunks directly to self.wfile.
-        Avoids buffering the whole archive in RAM.
-        Uses ZIP_STORED (no compression) so we can stream without knowing
-        the compressed size in advance — images are already compressed anyway.
-        """
-        CHUNK = 256 * 1024  # 256 KB chunks
+    # # ── Streaming ZIP writer ───────────────────────────────────────────────────
+    # def _stream_zip(self, files, arcname_fn):
+    #     """
+    #     Write a ZIP file in chunks directly to self.wfile.
+    #     Avoids buffering the whole archive in RAM.
+    #     Uses ZIP_STORED (no compression) so we can stream without knowing
+    #     the compressed size in advance — images are already compressed anyway.
+    #     """
+    #     CHUNK = 256 * 1024  # 256 KB chunks
 
-        def write_chunk(data):
-            # HTTP chunked transfer encoding
-            self.wfile.write(f"{len(data):X}\r\n".encode())
-            self.wfile.write(data)
-            self.wfile.write(b"\r\n")
+    #     def write_chunk(data):
+    #         # HTTP chunked transfer encoding
+    #         self.wfile.write(f"{len(data):X}\r\n".encode())
+    #         self.wfile.write(data)
+    #         self.wfile.write(b"\r\n")
 
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
-            for filepath in files:
-                try:
-                    arcname = arcname_fn(filepath)
-                    zf.write(filepath, arcname)
-                    # Flush chunks as we go
-                    chunk = buf.getvalue()
-                    if len(chunk) >= CHUNK:
-                        write_chunk(chunk)
-                        buf.seek(0)
-                        buf.truncate(0)
-                except OSError:
-                    pass  # skip unreadable files
+    #     buf = io.BytesIO()
+    #     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
+    #         for filepath in files:
+    #             try:
+    #                 arcname = arcname_fn(filepath)
+    #                 zf.write(filepath, arcname)
+    #                 # Flush chunks as we go
+    #                 chunk = buf.getvalue()
+    #                 if len(chunk) >= CHUNK:
+    #                     write_chunk(chunk)
+    #                     buf.seek(0)
+    #                     buf.truncate(0)
+    #             except OSError:
+    #                 pass  # skip unreadable files
 
-        # Flush remaining bytes + ZIP central directory
-        remaining = buf.getvalue()
-        if remaining:
-            write_chunk(remaining)
+    #     # Flush remaining bytes + ZIP central directory
+    #     remaining = buf.getvalue()
+    #     if remaining:
+    #         write_chunk(remaining)
 
-        # Chunked transfer terminator
-        self.wfile.write(b"0\r\n\r\n")
+    #     # Chunked transfer terminator
+    #     self.wfile.write(b"0\r\n\r\n")
 
 
 # ── Start server ──────────────────────────────────────────────────────────────

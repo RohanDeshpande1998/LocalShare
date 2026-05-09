@@ -772,7 +772,48 @@ document.getElementById("lb")
         self.end_headers()
 
         self.wfile.write(data)
+    
+    def serve_zip(self):
 
+        buf = io.BytesIO()
+
+        with zipfile.ZipFile(
+            buf,
+            "w",
+            zipfile.ZIP_STORED
+        ) as zf:
+
+            for f in ROOT.rglob("*"):
+
+                if f.is_file():
+
+                    zf.write(
+                        f,
+                        f.relative_to(ROOT)
+                    )
+
+        data = buf.getvalue()
+
+        self.send_response(200)
+
+        self.send_header(
+            "Content-Type",
+            "application/zip"
+        )
+
+        self.send_header(
+            "Content-Disposition",
+            'attachment; filename="localshare.zip"'
+        )
+
+        self.send_header(
+            "Content-Length",
+            str(len(data))
+        )
+
+        self.end_headers()
+
+        self.wfile.write(data)
 httpd = None
 
 def start_server():

@@ -195,8 +195,3 @@ Please open an issue first for large changes so we can discuss direction.
 MIT — do whatever you want with it.
 
 ---
-
-<div align="center">
-Built with Python's stdlib + a pinch of QR magic.<br>
-No telemetry. No cloud.
-</div>

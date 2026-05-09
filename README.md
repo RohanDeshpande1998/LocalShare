@@ -58,7 +58,7 @@ Then right-click any file or folder in Nautilus → **Scripts → Share via HTTP
 
 ---
 
-### Windows
+### Windows : WORK IN PROGRESS
 
 ```powershell
 # One-time: allow local scripts to run

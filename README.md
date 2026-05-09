@@ -42,13 +42,13 @@ Scan it with your phone (or any device on the same Wi-Fi) and you instantly get 
 ### Linux (Nautilus / GNOME Files)
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/localshare/main/linux/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/RohanDeshpande1998/localshare/main/linux/install.sh)
 ```
 
 Or clone and run locally:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/localshare
+git clone https://github.com/RohanDeshpande1998/localshare
 bash localshare/linux/install.sh
 ```
 

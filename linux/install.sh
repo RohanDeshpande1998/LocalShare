@@ -32,7 +32,6 @@ cat > "$SCRIPT_PATH" << 'PYTHON_SCRIPT'
 
 import os
 import io
-import sys
 import socket
 import shutil
 import zipfile
@@ -183,6 +182,12 @@ class GalleryHandler(http.server.BaseHTTPRequestHandler):
             self.serve_zip()
             return
 
+        if raw_path.startswith("/download-folder/"):
+            self.serve_folder_zip(
+                raw_path[len("/download-folder/"):]
+            )
+            return
+
         if raw_path.startswith("/thumb/"):
             self.serve_thumbnail(raw_path[7:])
             return
@@ -246,16 +251,26 @@ class GalleryHandler(http.server.BaseHTTPRequestHandler):
             folder_rel = str(Path(rel_path) / f.name)
 
             folder_cards += f"""
-            <a class="folder-card"
-               href="/{urllib.parse.quote(folder_rel)}">
+            <div class="folder-card-wrap">
 
-                <div class="folder-icon">📁</div>
+                <a class="folder-card"
+                   href="/{urllib.parse.quote(folder_rel)}">
 
-                <div class="folder-name">
-                    {f.name}
-                </div>
+                    <div class="folder-icon">📁</div>
 
-            </a>
+                    <div class="folder-name">
+                        {f.name}
+                    </div>
+
+                </a>
+
+                <a class="folder-dl-btn"
+                   href="/download-folder/{urllib.parse.quote(folder_rel)}"
+                   download>
+                   ⬇
+                </a>
+
+            </div>
             """
 
         img_cards = ""
@@ -291,7 +306,7 @@ class GalleryHandler(http.server.BaseHTTPRequestHandler):
                  href="/{quoted}"
                  download
                  onclick="event.stopPropagation()">
-                 &#8595;
+                 ⬇
               </a>
 
             </div>
@@ -410,6 +425,10 @@ h1 {{
     gap: 10px;
 }}
 
+.folder-card-wrap {{
+    position: relative;
+}}
+
 .folder-card {{
     background: #1a1a2e;
     border-radius: 12px;
@@ -423,6 +442,28 @@ h1 {{
     justify-content: center;
 
     aspect-ratio: 1;
+}}
+
+.folder-dl-btn {{
+    position: absolute;
+    top: 8px;
+    right: 8px;
+
+    width: 30px;
+    height: 30px;
+
+    border-radius: 50%;
+
+    background: rgba(0,0,0,.6);
+
+    color: #63caff;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    text-decoration: none;
+    font-size: 0.9rem;
 }}
 
 .folder-icon {{
@@ -537,18 +578,6 @@ h1 {{
     border-radius: 8px;
 }}
 
-#lb-bar {{
-    margin-top: 16px;
-}}
-
-#lb-dl {{
-    background: #1e3a5f;
-    color: #63caff;
-    padding: 10px 20px;
-    border-radius: 10px;
-    text-decoration: none;
-}}
-
 </style>
 
 </head>
@@ -572,24 +601,13 @@ h1 {{
 
     <img id="lb-img">
 
-    <div id="lb-bar">
-        <a id="lb-dl" href="" download>
-            ⬇ Download
-        </a>
-    </div>
-
 </div>
 
 <script>
 
-function openLightbox(src, filename) {{
+function openLightbox(src) {{
 
     document.getElementById("lb-img").src = src;
-
-    let dl = document.getElementById("lb-dl");
-
-    dl.href = src;
-    dl.download = filename;
 
     document.getElementById("lb")
         .classList.add("open");
@@ -707,7 +725,13 @@ document.getElementById("lb")
         with open(filepath, "rb") as f:
             shutil.copyfileobj(f, self.wfile)
 
-    def serve_zip(self):
+    def serve_folder_zip(self, foldername):
+
+        folder = self.safe_path(foldername)
+
+        if not folder or not folder.is_dir():
+            self.send_error(404)
+            return
 
         buf = io.BytesIO()
 
@@ -717,12 +741,13 @@ document.getElementById("lb")
             zipfile.ZIP_STORED
         ) as zf:
 
-            for f in ROOT.rglob("*"):
+            for f in folder.rglob("*"):
 
                 if f.is_file():
+
                     zf.write(
                         f,
-                        f.relative_to(ROOT)
+                        f.relative_to(folder.parent)
                     )
 
         data = buf.getvalue()
@@ -736,7 +761,7 @@ document.getElementById("lb")
 
         self.send_header(
             "Content-Disposition",
-            'attachment; filename="localshare.zip"'
+            f'attachment; filename="{folder.name}.zip"'
         )
 
         self.send_header(

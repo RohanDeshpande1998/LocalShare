@@ -276,13 +276,13 @@ class ShareWindow(Gtk.Window):
         clip.set_text(URL, -1)
 
 	# NEW
-	def on_stop(self, *_):
-	    if httpd:
+    def on_stop(self, *_):
+        if httpd:
 		    threading.Thread(target=httpd.shutdown, daemon=True).start()
-	    if temp_dir:
-		    import shutil
-		    shutil.rmtree(temp_dir, ignore_errors=True)
-	    Gtk.main_quit()
+        if temp_dir:
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        Gtk.main_quit()
 
 def run():
     win = ShareWindow()

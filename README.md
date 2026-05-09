@@ -65,13 +65,13 @@ Then right-click any file or folder in Nautilus → **Scripts → Share via HTTP
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
 # Install
-irm https://raw.githubusercontent.com/YOUR_USERNAME/localshare/main/windows/install.ps1 | iex
+irm https://raw.githubusercontent.com/RohanDeshpande1998/localshare/main/windows/install.ps1 | iex
 ```
 
 Or clone and run locally:
 
 ```powershell
-git clone https://github.com/YOUR_USERNAME/localshare
+git clone https://github.com/RohanDeshpande1998/localshare
 .\localshare\windows\install.ps1
 ```
 
